@@ -2,33 +2,22 @@ import discord
 from discord.ext import commands
 import asyncio
 import threading
+import youtube_dl
 import os
 from random import choice as rndchoice
 from random import shuffle
 from .utils.dataIO import fileIO
 from .utils import checks
 from __main__ import send_cmd_help
-from __main__ import settings as bot_settings
 import glob
 import re
 import aiohttp
+from bs4 import BeautifulSoup
 import json
 import time
 
-try:
-    import youtube_dl
-except:
-    youtube_dl = None
-
-try:
-    if not discord.opus.is_loaded():
-        discord.opus.load_opus('libopus-0.dll')
-except OSError: # Incorrect bitness
-    opus = False
-except: # Missing opus
-    opus = None
-else:
-    opus = True
+if not discord.opus.is_loaded():
+    discord.opus.load_opus('libopus-0.dll')
 
 youtube_dl_options = {
     'format': 'bestaudio/best',
@@ -40,8 +29,7 @@ youtube_dl_options = {
     'ignoreerrors': True,
     'quiet': True,
     'no_warnings': True,
-    'outtmpl': "data/audio/cache/%(id)s",
-    'default_search' : 'auto'}
+    'outtmpl': "data/audio/cache/%(id)s"}
 
 class Audio:
     """Music streaming."""
@@ -59,42 +47,34 @@ class Audio:
         self.cleanup_timer = int(time.perf_counter())
         self.past_titles = [] # This is to prevent the audio module from setting the status to None if a status other than a track's title gets set
 
-        self.sing =  ["https://www.youtube.com/watch?v=TSWWyCiX6E8", "https://www.youtube.com/watch?v=nrYpOPLh3dc",
-                     "https://www.youtube.com/watch?v=Mjpc3A4a0yc", "https://www.youtube.com/watch?v=D-xPudQ4yeo",
-                     "https://www.youtube.com/watch?v=L5u-RTNEHio", "https://www.youtube.com/watch?v=kxJE6SSX-aw"]
+        self.sing =  ["https://www.youtube.com/watch?v=zGTkAVsrfg8", "https://www.youtube.com/watch?v=cGMWL8cOeAU",
+                     "https://www.youtube.com/watch?v=vFrjMq4aL-g", "https://www.youtube.com/watch?v=WROI5WYBU_A",
+                     "https://www.youtube.com/watch?v=41tIUr_ex3g", "https://www.youtube.com/watch?v=f9O2Rjn1azc"]
 
     @commands.command(pass_context=True, no_pm=True)
-    async def play(self, ctx, *link : str):
-        """Plays videos (links/search terms)
+    async def play(self, ctx, link : str):
+        """Plays link
         """
         if self.downloader["DOWNLOADING"]:
             await self.bot.say("I'm already downloading a track.")
             return
         msg = ctx.message
         if await self.check_voice(msg.author, msg):
-            if link != ():
-                link = " ".join(link)
-                if "http" not in link and "www." not in link:
-                    link = "[SEARCH:]" + link
-                else:
-                    if not self.is_playlist_valid([link]):
-                        await self.bot.say("Invalid link.")
-                        return
-                if await self.is_alone_or_admin(msg):
+            if self.is_playlist_valid([link]): # reusing a function
+                if await self.is_alone_or_admin(msg.author):
                     self.queue = []
                     self.current = -1
                     self.playlist = []
                     self.queue.append(link)
                     self.music_player.paused = False
-                    if self.music_player.is_playing(): self.music_player.stop()
-                    await self.bot.say("Playing requested link...")
+                    self.music_player.stop()
                 else:
                     self.playlist = []
                     self.current = -1
                     if not self.queue: await self.bot.say("The link has been put into queue.")
                     self.queue.append(link)
             else:
-                await self.bot.say("You need to add a link or search terms.")
+                await self.bot.say("That link is not allowed.")
 
     @commands.command(aliases=["title"])
     async def song(self):
@@ -132,9 +112,7 @@ class Audio:
                 self.playlist = fileIO("data/audio/playlists/" + name, "load")["playlist"]
                 if random: shuffle(self.playlist)
                 self.music_player.paused = False
-                if self.music_player.is_playing(): self.music_player.stop()
-            else:
-                await self.bot.say("There's no playlist with that name.")
+                self.music_player.stop()
 
     @commands.command(pass_context=True, aliases=["next"], no_pm=True)
     async def skip(self, ctx):
@@ -142,7 +120,7 @@ class Audio:
         """
         msg = ctx.message
         if self.music_player.is_playing():
-            if await self.is_alone_or_admin(msg):
+            if await self.is_alone_or_admin(msg.author):
                 self.music_player.paused = False
                 self.music_player.stop()
             else:
@@ -170,7 +148,7 @@ class Audio:
 
             if len(self.skip_votes)-1 >= votes_needed:
                 self.music_player.paused = False
-                if self.music_player.is_playing(): self.music_player.stop()
+                self.music_player.stop()
                 self.skip_votes = []
                 return
             await self.bot.say("You voted to skip. Votes: [{0}/{1}]".format(str(len(self.skip_votes)-1), str(votes_needed)))
@@ -178,11 +156,7 @@ class Audio:
 
     @commands.command(pass_context=True, no_pm=True)
     async def local(self, ctx, name : str):
-        """Plays a local playlist
-
-        For bot's owner:
-        https://github.com/Twentysix26/Red-DiscordBot/wiki/Audio-module"""
-        help_link = "https://github.com/Twentysix26/Red-DiscordBot/wiki/Audio-module"
+        """Plays a local playlist"""
         if self.downloader["DOWNLOADING"]:
             await self.bot.say("I'm already downloading a track.")
             return
@@ -195,19 +169,19 @@ class Audio:
                     files.extend(glob.glob("data/audio/localtracks/" + name + "/*.mp3"))
                 if glob.glob("data/audio/localtracks/" + name + "/*.flac"):
                     files.extend(glob.glob("data/audio/localtracks/" + name + "/*.flac"))
-                if await self.is_alone_or_admin(msg):
+                if await self.is_alone_or_admin(msg.author):
                     if await self.check_voice(msg.author, ctx.message):
                         self.queue = []
                         self.current = -1
                         self.playlist = files
                         self.music_player.paused = False
-                        if self.music_player.is_playing(): self.music_player.stop()
+                        self.music_player.stop()
                 else:
                     await self.bot.say("I'm in queue mode. Controls are disabled if you're in a room with multiple people.")
             else:
                 await self.bot.say("There is no local playlist with that name.")
         else:
-            await self.bot.say("There are no valid playlists in the localtracks folder.\nIf you're the owner, see {}".format(help_link))
+            await self.bot.say(message.channel, "There are no valid playlists in the localtracks folder.")
 
     @commands.command(pass_context=True, no_pm=True)
     async def loop(self, ctx):
@@ -215,12 +189,9 @@ class Audio:
         """
         msg = ctx.message
         if self.music_player.is_playing():
-            if await self.is_alone_or_admin(msg):
+            if await self.is_alone_or_admin(msg.author):
                 self.current = -1
-                if self.downloader["URL"]:
-                    self.playlist = [self.downloader["URL"]]
-                else: # local
-                    self.playlist = [self.downloader["ID"]]
+                self.playlist = [self.downloader["URL"]]
                 await self.bot.say("I will play this song on repeat.")
             else:
                 await self.bot.say("I'm in queue mode. Controls are disabled if you're in a room with multiple people.")
@@ -231,7 +202,7 @@ class Audio:
         """
         msg = ctx.message
         if self.music_player.is_playing():
-            if await self.is_alone_or_admin(msg):
+            if await self.is_alone_or_admin(msg.author):
                 if self.playlist:
                     shuffle(self.playlist)
                     await self.bot.say("The order of this playlist has been mixed")
@@ -244,7 +215,7 @@ class Audio:
         """
         msg = ctx.message
         if self.music_player.is_playing() and self.playlist:
-            if await self.is_alone_or_admin(msg):
+            if await self.is_alone_or_admin(msg.author):
                 self.current -= 2
                 if self.current == -1:
                     self.current = len(self.playlist) -3
@@ -261,7 +232,7 @@ class Audio:
         """
         msg = ctx.message
         if self.music_player.is_playing():
-            if await self.is_alone_or_admin(msg):
+            if await self.is_alone_or_admin(msg.author):
                 await self.close_audio()
             else:
                 await self.bot.say("You can't stop music when there are other people in the channel! Vote to skip instead.")
@@ -272,28 +243,21 @@ class Audio:
         self.queue = []
         self.playlist = []
         self.current = -1
-        if self.music_player.is_playing(): self.music_player.stop()
+        self.music_player.stop()
         await asyncio.sleep(1)
-        if self.bot.voice: await self.bot.voice.disconnect()
+        await self.bot.voice.disconnect()
 
     @commands.command(name="queue", pass_context=True, no_pm=True) #check that author is in the same channel as the bot
-    async def _queue(self, ctx, *link : str):
-        """Add links or search terms to queue
+    async def _queue(self, ctx, link : str=None):
+        """Add link to queue
 
         Shows queue list if no links are provided.
         """
-        if link == ():
+        if not link:
             queue_list = await self.queue_titles()
-            await self.bot.say("Videos in queue: \n" + queue_list + "\n\nType queue <link> to add a link or search terms to the queue.")
-        elif await self.check_voice(ctx.message.author, ctx.message):
+            await self.bot.say("Videos in queue: \n" + queue_list + "\n\nType queue <link> to add a link to the queue.")
+        elif await self.check_voice(ctx.message.author, ctx.message) and self.is_playlist_valid([link]):
             if not self.playlist:
-                link = " ".join(link)
-                if "http" not in link or "." not in link:
-                    link = "[SEARCH:]" + link
-                else:
-                    if not self.is_playlist_valid([link]):
-                        await self.bot.say("Invalid link.")
-                        return
                 self.queue.append(link)
                 msg = ctx.message
                 result = await self.get_song_metadata(link)
@@ -310,16 +274,14 @@ class Audio:
         else:
             await self.bot.say("That link is now allowed.")
 
-    async def is_alone_or_admin(self, message): #Direct control. fix everything
-        author = message.author
-        server = message.server
+    async def is_alone_or_admin(self, author): #Direct control. fix everything
         if not self.settings["QUEUE_MODE"]:
             return True
-        elif author.id == bot_settings.owner:
+        elif author.id == checks.settings["OWNER"]:
             return True
-        elif discord.utils.get(author.roles, name=bot_settings.get_server_admin(server)) is not None:
+        elif discord.utils.get(author.roles, name=checks.settings["ADMIN_ROLE"]) is not None:
             return True
-        elif discord.utils.get(author.roles, name=bot_settings.get_server_mod(server)) is not None:
+        elif discord.utils.get(author.roles, name=checks.settings["MOD_ROLE"]) is not None:
             return True
         elif len(author.voice_channel.voice_members) in (1, 2):
             return True
@@ -338,7 +300,7 @@ class Audio:
                     self.queue = []
                     await self.play_video(rndchoice(self.sing))
             else:
-                if await self.is_alone_or_admin(msg):
+                if await self.is_alone_or_admin(msg.author):
                     self.queue = []
                     await self.play_video(rndchoice(self.sing))
                 else:
@@ -423,7 +385,7 @@ class Audio:
         return song_list
 
     @commands.group(pass_context=True)
-    @checks.mod_or_permissions(manage_roles=True)
+    @checks.mod_or_permissions()
     async def audioset(self, ctx):
         """Changes audio module settings"""
         if ctx.invoked_subcommand is None:
@@ -526,7 +488,7 @@ class Audio:
 
     async def play_video(self, link):
         self.downloader = {"DONE" : False, "TITLE" : False, "ID" : False, "URL": False, "DURATION" : False, "DOWNLOADING" : False}
-        if "https://" in link or "http://" in link or "[SEARCH:]" in link:
+        if "https://" in link or "http://" in link:
             path = "data/audio/cache/"
             t = threading.Thread(target=self.get_video, args=(link,self,))
             t.start()
@@ -537,7 +499,7 @@ class Audio:
             await asyncio.sleep(1)
         if self.downloader["ID"]:
             try:
-                if self.music_player.is_playing(): self.music_player.stop()
+                self.music_player.stop()
                 self.music_player = self.bot.voice.create_ffmpeg_player(path + self.downloader["ID"], options='''-filter:a "volume={}"'''.format(self.settings["VOLUME"]))
                 self.music_player.paused = False
                 self.music_player.start()
@@ -557,7 +519,7 @@ class Audio:
 
     async def check_voice(self, author, message):
         if self.bot.is_voice_connected():
-            v_channel = self.bot.voice.channel
+            v_channel = message.server.me.voice_channel
             if author.voice_channel == v_channel:
                 return True
             elif len(v_channel.voice_members) == 1:
@@ -611,12 +573,7 @@ class Audio:
         try:
             self.downloader["DOWNLOADING"] = True
             yt = youtube_dl.YoutubeDL(youtube_dl_options)
-            if "[SEARCH:]" not in url:
-                v = yt.extract_info(url, download=False)
-            else:
-                url = url.replace("[SEARCH:]", "")
-                url = "https://youtube.com/watch?v=" + yt.extract_info(url, download=False)["entries"][0]["id"]
-                v = yt.extract_info(url, download=False)
+            v = yt.extract_info(url, download=False)
             if v["duration"] > self.settings["MAX_LENGTH"]: raise MaximumLength("Track exceeded maximum length. See help audioset maxlength")
             if not os.path.isfile("data/audio/cache/" + v["id"]):
                 v = yt.extract_info(url, download=True)
@@ -625,7 +582,7 @@ class Audio:
             print(e) # TODO
             audio.downloader = {"DONE" : True, "TITLE" : False, "ID" : False, "URL" : False, "DOWNLOADING" : False}
 
-    async def incoming_messages(self, msg):
+    async def incoming_messages(self, msg): # Workaround, need to fix
         if msg.author.id != self.bot.user.id:
 
             if self.settings["MAX_CACHE"] != 0:
@@ -634,6 +591,8 @@ class Audio:
                     if self.cache_size() >= self.settings["MAX_CACHE"]:
                         self.empty_cache()
                         print("Cache emptied.")
+
+
 
             if msg.channel.is_private and msg.attachments != []:
                 await self.transfer_playlist(msg)
@@ -658,51 +617,22 @@ class Audio:
 
     @commands.command(pass_context=True, no_pm=True)
     async def addplaylist(self, ctx, name : str, link : str): #CHANGE COMMAND NAME
-        """Adds tracks from youtube / soundcloud playlist link"""
-        if self.is_playlist_name_valid(name) and len(name) < 25:
+        """Adds tracks from youtube playlist link"""
+        if self.is_playlist_name_valid(name) and len(name) < 25 and self.is_playlist_link_valid(link):
             if fileIO("playlists/" + name + ".txt", "check"):
                 await self.bot.say("`A playlist with that name already exists.`")
                 return False
-            if "youtube" in link.lower():
-                links = await self.parse_yt_playlist(link)
-            elif "soundcloud" in link.lower():
-                links = await self.parse_sc_playlist(link)
+            links = await self.parse_yt_playlist(link)
             if links:
                 data = { "author"  : ctx.message.author.id,
                          "playlist": links,
                          "link"    : link}
                 fileIO("data/audio/playlists/" + name + ".txt", "save", data)
-                await self.bot.say("Playlist added. Name: {}, songs: {}".format(name, str(len(links))))
+                await self.bot.say("Playlist added. Name: {}".format(name))
             else:
                 await self.bot.say("Something went wrong. Either the link was incorrect or I was unable to retrieve the page.")
         else:
-            await self.bot.say("Something is wrong with the playlist's link or its filename. Remember, the name must be with only numbers, letters and underscores.")
-
-    @commands.command(pass_context=True, no_pm=True)
-    async def delplaylist(self, ctx, name : str):
-        """Deletes playlist
-
-        Limited to owner, admins and author of the playlist."""
-        file_path = "data/audio/playlists/" + name + ".txt"
-        author = ctx.message.author
-        if fileIO(file_path, "check"):
-            playlist_author_id = fileIO(file_path, "load")["author"]
-            check = await self.admin_or_owner(ctx.message)
-            if check or author.id == playlist_author_id:
-                os.remove(file_path)
-                await self.bot.say("Playlist {} has been removed.".format(name))
-            else:
-                await self.bot.say("Only owner, admins and the author of the playlist can delete it.")
-        else:
-            await self.bot.say("There's no playlist with that name.")
-
-    async def admin_or_owner(self, message):
-        if message.author.id == bot_settings.owner:
-            return True
-        elif discord.utils.get(message.author.roles, name=bot_settings.get_server_admin(message.server)) is not None:
-            return True
-        else:
-            return False
+            await self.bot.say("Something is wrong with the playlist's link or its filename. Remember, the name must be with only numbers, letters and underscores. Link must be this format: https://www.youtube.com/playlist?list=PLe8jmEHFkvsaDOOWcREvkgFoj6MD0pXXX")
 
     async def transfer_playlist(self, message):
         msg = message.attachments[0]
@@ -750,25 +680,20 @@ class Audio:
         return True
 
     async def parse_yt_playlist(self, url):
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
         try:
-            if not "www.youtube.com/playlist?list=" in url:   
-                url = url.split("&")
-                url = "https://www.youtube.com/playlist?" + [x for x in url if "list=" in x][0]
-            playlist = []
-            yt = youtube_dl.YoutubeDL(youtube_dl_options)
-            for entry in yt.extract_info(url, download=False, process=False)["entries"]:
-                playlist.append("https://www.youtube.com/watch?v=" + entry["id"])
-            return playlist
-        except:
-            return False
+            page = await aiohttp.post(url, headers=headers)
+            page = await page.text()
+            soup = BeautifulSoup(page, 'html.parser')
+            tags = soup.find_all("tr", class_="pl-video yt-uix-tile ")
+            links = []
 
-    async def parse_sc_playlist(self, link):
-        try:
-            playlist = []
-            yt = youtube_dl.YoutubeDL(youtube_dl_options)
-            for i in yt.extract_info(link, download=False, process=False)["entries"]:
-                playlist.append(i['url'][:4] + 's' + i['url'][4:])
-            return playlist
+            for tag in tags:
+                links.append("https://www.youtube.com/watch?v=" + tag['data-video-id'])
+            if links != []:
+                return links
+            else:
+                return False
         except:
             return False
 
@@ -856,15 +781,6 @@ def check_files():
 def setup(bot):
     check_folders()
     check_files()
-    if youtube_dl is None:
-        raise RuntimeError("You need to run `pip3 install youtube_dl`")
-        return
-    if opus is False:
-        raise RuntimeError("Your opus library's bitness must match your python installation's bitness. They both must be either 32bit or 64bit.")
-        return
-    elif opus is None:
-        raise RuntimeError("You need to install ffmpeg and opus. See \"https://github.com/Twentysix26/Red-DiscordBot/wiki/Requirements\"")
-        return
     loop = asyncio.get_event_loop()
     n = Audio(bot)
     loop.create_task(n.queue_manager())
